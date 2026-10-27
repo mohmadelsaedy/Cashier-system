@@ -460,7 +460,7 @@ tfoot td{font-weight:600;background:var(--surface-2);border-top:1px solid var(--
       <div class="view-head">
         <div><h1>المنتجات والمخزون</h1><p id="prod-sub"></p></div>
         <div class="row">
-          <button class="btn" id="btn-import"><span data-ic="upload"></span>استيراد CSV</button>
+          <button class="btn" id="btn-import"><span data-ic="upload"></span>استيراد Excel</button>
           <button class="btn" id="btn-export-prod"><span data-ic="download"></span>تصدير</button>
           <button class="btn primary" id="btn-add-prod"><span data-ic="plus"></span>منتج جديد</button>
         </div>
@@ -471,7 +471,7 @@ tfoot td{font-weight:600;background:var(--surface-2);border-top:1px solid var(--
         <div class="seg" id="prod-filter"><button data-f="all" aria-pressed="true">الكل</button><button data-f="low">النواقص</button><button data-f="out">نفدت</button></div>
       </div>
       <div id="prod-table"></div>
-      <input type="file" id="file-csv" accept=".csv,text/csv" class="hidden">
+      <input type="file" id="file-csv" accept=".xlsx,.xls,.csv" class="hidden">
     </section>
 
     <!-- Invoices -->
@@ -1292,7 +1292,7 @@ function renderProducts(){
   if(S.prodFilter==='out')list=list.filter(p=>p.onHand<=0);
   list.sort((a,b)=>a.name.localeCompare(b.name,'ar'));
   const el=$('#prod-table');
-  if(!S.products.length){el.innerHTML=`<div class="panel empty">${ic('box','i big')}<h3>ابدأ بإضافة منتجاتك</h3><p>امسح باركود المنتج داخل نموذج الإضافة، أو استورد ملف CSV فيه الأعمدة: name, barcode, category, unit, cost, price, stock, minStock</p><div class="row"><button class="btn primary" onclick="productModal()">${ic('plus')}منتج جديد</button><button class="btn" onclick="seedProducts()">تحميل منتجات تجريبية</button></div></div>`;return}
+  if(!S.products.length){el.innerHTML=`<div class="panel empty">${ic('box','i big')}<h3>ابدأ بإضافة منتجاتك</h3><p>امسح باركود المنتج داخل نموذج الإضافة، أو استورد شيت Excel الأصناف (أو ملف CSV) فيه أعمدة اسم المنتج وسعر البيع على الأقل</p><div class="row"><button class="btn primary" onclick="productModal()">${ic('plus')}منتج جديد</button><button class="btn" onclick="seedProducts()">تحميل منتجات تجريبية</button></div></div>`;return}
   if(!list.length){el.innerHTML=`<div class="panel empty"><h3>لا توجد نتائج</h3><p>غيّر البحث أو التصنيف.</p></div>`;return}
   el.innerHTML=`<div class="table-wrap"><table><thead><tr><th>المنتج</th><th>الباركود</th><th>سعر الشراء</th><th>سعر البيع</th><th>الهامش</th><th>المخزون</th><th>المبيع</th><th></th></tr></thead><tbody>${list.map(p=>{
     const st=p.onHand,mn=+p.minStock||0,mg=p.price?r2((p.price-(p.cost||0))/p.price*100):0;
@@ -1316,19 +1316,47 @@ function parseCSV(t){const rows=[];let row=[],f='',q=false;t=t.replace(/^\ufeff/
   if(f||row.length){row.push(f);rows.push(row)}return rows.filter(r=>r.some(x=>x.trim()))}
 $('#btn-export-prod').onclick=()=>saveFile('products.csv',toCSV([['name','barcode','category','unit','cost','price','stock','minStock'],...S.products.map(p=>[p.name,p.barcode,p.category,p.unit,p.cost,p.price,p.onHand,p.minStock])]),'text/csv');
 $('#btn-import').onclick=()=>$('#file-csv').click();
+let xlsxLib=null;
+function loadXLSX(){if(window.XLSX)return Promise.resolve();if(xlsxLib)return xlsxLib;
+  xlsxLib=new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';sc.onload=res;sc.onerror=()=>{xlsxLib=null;rej()};document.head.appendChild(sc)});return xlsxLib}
+const toNum=v=>{if(typeof v==='number')return v;const t=String(v??'').replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[٫]/g,'.').replace(/[,،\s]/g,'').replace(/[^\d.\-]/g,'');return t===''?NaN:parseFloat(t)};
+const cellStr=v=>typeof v==='number'?(Number.isInteger(v)?v.toFixed(0):String(v)):String(v??'').trim();
+const hkey=s=>String(s||'').toLowerCase().replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي').replace(/[\s*:_\-()]/g,'');
+const COL_ALIAS={name:['name','الاسم','اسم المنتج','اسم الصنف','الصنف','المنتج'],barcode:['barcode','الباركود','باركود','الكود'],category:['category','التصنيف','القسم','الفئة'],unit:['unit','الوحدة','وحدة البيع'],cost:['cost','سعر الشراء','التكلفة','سعر التكلفة'],price:['price','سعر البيع','السعر'],stock:['stock','الكمية','المخزون','الرصيد','الكمية الحالية'],minStock:['minstock','حد الطلب','حد إعادة الطلب']};
+function findTable(rows){
+  for(let r=0;r<Math.min(rows.length,20);r++){const h=rows[r].map(hkey);const col={};
+    for(const k in COL_ALIAS){col[k]=COL_ALIAS[k].map(hkey).map(a=>h.indexOf(a)).find(i=>i>=0)??-1}
+    if(col.name>=0&&col.price>=0)return{col,start:r+1}}
+  return null}
+async function readSheetRows(f){
+  if(/\.(xlsx|xls|xlsm)$/i.test(f.name)){
+    try{await loadXLSX()}catch{toast('تعذّر تحميل قارئ ملفات Excel، تأكد من الإنترنت','err');return null}
+    const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+    for(const n of wb.SheetNames){const rows=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:''}).map(r=>r.map(cellStr));const t=findTable(rows);if(t)return{rows,...t}}
+    return{rows:[],col:null}}
+  const rows=parseCSV(await f.text());const t=findTable(rows);return t?{rows,...t}:{rows,col:null};
+}
 $('#file-csv').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
-  const rows=parseCSV(await f.text());if(rows.length<2){toast('الملف فارغ','err');return}
-  const h=rows[0].map(x=>x.trim().toLowerCase());const ix=k=>h.indexOf(k);
-  const alias={name:['name','الاسم','اسم المنتج'],barcode:['barcode','الباركود'],category:['category','التصنيف'],unit:['unit','الوحدة'],cost:['cost','سعر الشراء'],price:['price','سعر البيع','السعر'],stock:['stock','الكمية','المخزون'],minStock:['minstock','حد الطلب']};
-  const col={};for(const k in alias){col[k]=alias[k].map(ix).find(i=>i>=0)??-1}
-  if(col.name<0||col.price<0){toast('الملف يجب أن يحتوي على عمودي name و price','err');return}
-  let added=0,updated=0;
-  for(const r of rows.slice(1)){const g=k=>col[k]>=0?(r[col[k]]||'').trim():'';const name=g('name');if(!name)continue;
-    const bc=g('barcode');const ex=bc?S.products.find(p=>p.barcode===bc):S.products.find(p=>p.name===name);const id=ex?.id||uid('p');
-    const o={id,name,barcode:bc||ex?.barcode||'',category:g('category')||ex?.category,unit:g('unit')||ex?.unit,cost:g('cost')||ex?.cost||0,price:g('price'),minStock:g('minStock')||ex?.minStock||5};
-    if(g('stock')!==''||!ex){o.stock=g('stock')||0;o.cb=S.sumC[id]||0}else{o.stock=ex.stock;o.cb=ex.cb||0}
-    ex?updated++:added++;enqueue('products/'+id,productDoc(o))}
-  toast(`تم: ${added} جديد، ${updated} محدث`,'ok')};
+  const t=await readSheetRows(f);if(!t)return;
+  if(!t.col){toast('ملقيتش عمودي اسم المنتج وسعر البيع في الملف. استخدم شيت الأصناف الجاهز','err',6000);return}
+  const{rows,col,start}=t;const ops=[],bad=[],seen=new Set();let added=0,updated=0;
+  for(let r=start;r<rows.length;r++){const row=rows[r];const g=k=>col[k]>=0?String(row[col[k]]??'').trim():'';const name=g('name');if(!name)continue;
+    const price=toNum(g('price'));if(!(price>0)){bad.push(`صف ${r+1}: ${name} بدون سعر بيع`);continue}
+    const bc=g('barcode').replace(/\s/g,'');
+    if(bc&&seen.has(bc)){bad.push(`صف ${r+1}: الباركود ${bc} متكرر`);continue}if(bc)seen.add(bc);
+    const ex=bc?S.products.find(p=>p.barcode===bc):S.products.find(p=>p.name===name);const id=ex?.id||uid('p');
+    const cost=toNum(g('cost')),stock=toNum(g('stock')),mn=toNum(g('minStock'));
+    const o={id,name,barcode:bc||ex?.barcode||'',category:g('category')||ex?.category,unit:g('unit')||ex?.unit,cost:isNaN(cost)?(ex?.cost||0):cost,price,minStock:isNaN(mn)?(ex?.minStock??5):mn};
+    if(!isNaN(stock)||!ex){o.stock=isNaN(stock)?0:stock;o.cb=S.sumC[id]||0}else{o.stock=ex.stock;o.cb=ex.cb||0}
+    ex?updated++:added++;ops.push(productDoc(o))}
+  if(!ops.length){toast(bad.length?'كل الصفوف فيها أخطاء: '+bad[0]:'الملف مفيهوش أصناف','err',6000);return}
+  const m=openModal(`${mh('مراجعة قبل الاستيراد')}<div class="modal-b">
+    <div class="stat-grid"><div class="stat key"><div class="s-l">أصناف جديدة</div><div class="s-v num">${added}</div></div><div class="stat"><div class="s-l">أصناف هتتحدث</div><div class="s-v num">${updated}</div></div><div class="stat"><div class="s-l">صفوف فيها مشاكل</div><div class="s-v num" style="color:${bad.length?'var(--danger)':'inherit'}">${bad.length}</div></div></div>
+    ${bad.length?`<ul class="list" style="margin-top:12px;max-height:180px;overflow:auto;font-size:13px">${bad.slice(0,50).map(b=>`<li>${esc(b)}</li>`).join('')}</ul><p class="muted" style="font-size:12.5px;margin:6px 0 0">الصفوف دي هتتجاهل. صلّحها في الشيت وارفعه تاني.</p>`:''}
+    <p class="muted" style="font-size:12.5px;margin:12px 0 0">الأصناف الموجودة بيتم التعرف عليها بالباركود، أو بالاسم لو مفيش باركود. لو خانة الكمية فاضية، رصيد الصنف الموجود مش هيتغير.</p>
+  </div><div class="modal-f"><button class="btn" data-close>رجوع</button><button class="btn primary" id="im-ok">${ic('upload')}استيراد ${ops.length} صنف</button></div>`);
+  $('#im-ok',m).onclick=()=>{for(const o of ops)enqueue('products/'+o.id,o);closeModal();toast(`تم: ${added} جديد، ${updated} محدث`,'ok')};
+};
 
 /* ================= Invoices ================= */
 function rangeKeys(r){const t=dayStart();if(r==='today')return[dkey(t),dkey(t)];if(r==='yesterday')return[dkey(t-DAY),dkey(t-DAY)];if(r==='all')return['0000','9999'];return[dkey(t-(+r-1)*DAY),dkey(t)]}
