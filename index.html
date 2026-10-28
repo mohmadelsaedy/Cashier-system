@@ -41,6 +41,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer}
 :focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 .num{font-variant-numeric:tabular-nums;direction:ltr;unicode-bidi:isolate;display:inline-block}
+td.num,th.num{display:table-cell}
 svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
 .muted{color:var(--ink-2)}
 .hidden{display:none!important}
@@ -1318,7 +1319,18 @@ $('#btn-export-prod').onclick=()=>saveFile('products.csv',toCSV([['name','barcod
 $('#btn-import').onclick=()=>$('#file-csv').click();
 let xlsxLib=null;
 function loadXLSX(){if(window.XLSX)return Promise.resolve();if(xlsxLib)return xlsxLib;
-  xlsxLib=new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';sc.onload=res;sc.onerror=()=>{xlsxLib=null;rej()};document.head.appendChild(sc)});return xlsxLib}
+  const srcs=['xlsx.full.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
+    'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+    'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'];
+  const tryLoad=i=>new Promise((res,rej)=>{
+    if(window.XLSX)return res();
+    if(i>=srcs.length)return rej();
+    const sc=document.createElement('script');sc.src=srcs[i];
+    sc.onload=()=>window.XLSX?res():tryLoad(i+1).then(res,rej);
+    sc.onerror=()=>{sc.remove();tryLoad(i+1).then(res,rej)};
+    document.head.appendChild(sc)});
+  xlsxLib=tryLoad(0).catch(e=>{xlsxLib=null;throw e});return xlsxLib}
 const toNum=v=>{if(typeof v==='number')return v;const t=String(v??'').replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[٫]/g,'.').replace(/[,،\s]/g,'').replace(/[^\d.\-]/g,'');return t===''?NaN:parseFloat(t)};
 const cellStr=v=>typeof v==='number'?(Number.isInteger(v)?v.toFixed(0):String(v)):String(v??'').trim();
 const hkey=s=>String(s||'').toLowerCase().replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي').replace(/[\s*:_\-()]/g,'');
@@ -1330,7 +1342,7 @@ function findTable(rows){
   return null}
 async function readSheetRows(f){
   if(/\.(xlsx|xls|xlsm)$/i.test(f.name)){
-    try{await loadXLSX()}catch{toast('تعذّر تحميل قارئ ملفات Excel، تأكد من الإنترنت','err');return null}
+    try{await loadXLSX()}catch{toast('تعذّر تحميل قارئ ملفات Excel. احفظ الشيت بصيغة CSV UTF-8 وارفعه، أو تأكد من الإنترنت','err',7000);return null}
     const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
     for(const n of wb.SheetNames){const rows=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:''}).map(r=>r.map(cellStr));const t=findTable(rows);if(t)return{rows,...t}}
     return{rows:[],col:null}}
